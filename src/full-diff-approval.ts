@@ -9,9 +9,19 @@
  *   and the reason is surfaced to the LLM (verified in ExtensionToolWrapper.execute:
  *   block → throw Error).
  *
+ * The diff itself is rendered with omp's own primitives so the overlay looks
+ * exactly like the native edit/write diff display:
+ * - `generateDiffString` (@oh-my-pi/pi-coding-agent/edit) produces the numbered
+ *   `+<lineNum>|content` diff format omp uses internally;
+ * - `renderDiff` (@oh-my-pi/pi-coding-agent) paints it with the native theme
+ *   (toolDiffRemoved/toolDiffAdded/toolDiffContext) including intra-line
+ *   word-level highlighting of the changed tokens.
+ *
  * Requirement: `tools.approval.edit/write: allow` in config — otherwise the
  * native approval dialog also appears (tool_call fires before the approval gate).
  */
+import { generateDiffString } from '@oh-my-pi/pi-coding-agent/edit';
+import { renderDiff, type ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
 import type { Component } from '@oh-my-pi/pi-tui';
 import {
   extractPrintableText,
@@ -19,14 +29,92 @@ import {
   replaceTabs,
   truncateToWidth,
 } from '@oh-my-pi/pi-tui';
-import type { ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
-import { buildReviewPayload, type ReviewPayload } from './diff-builder';
+import {
+  buildNewText,
+  buildNotFoundWarning,
+  buildRawArgsView,
+  findOldStringOccurrences,
+  isInternalUrl,
+  resolveFilePath,
+} from './diff-builder';
 
 /** Number of diff lines shown in the overlay window (terminal height is unknown at render). */
 const BODY_ROWS = 24;
 
 /** Serialize reviews: `custom()` is modal, one at a time (the agent may issue several edits in a turn). */
 let gate: Promise<unknown> = Promise.resolve();
+
+interface ReviewPayload {
+  title: string;
+  diff: string;
+  /** Real file path used for context-line syntax highlighting (diff payloads only). */
+  filePath?: string;
+}
+
+async function buildReviewPayload(
+  input: Record<string, unknown>,
+  cwd: string,
+  toolName: string,
+): Promise<ReviewPayload> {
+  const path = typeof input.path === 'string' ? input.path : '';
+  const title = `${toolName} ${path || '(no path)'}`;
+
+  if (!path) {
+    const diff = buildRawArgsView('⚠ missing path — raw arguments', input);
+    return { title, diff };
+  }
+  if (isInternalUrl(path)) {
+    const diff = buildRawArgsView(
+      'Internal device write — no file diff available',
+      input,
+    );
+    return { title, diff };
+  }
+
+  const absPath = resolveFilePath(path, cwd);
+  let oldText: string | undefined;
+  try {
+    oldText = await Bun.file(absPath).text();
+  } catch {
+    oldText = undefined;
+  }
+  const base = oldText ?? '';
+
+  const oldString = input.old_string;
+  const newString = input.new_string;
+  if (typeof oldString === 'string' && typeof newString === 'string') {
+    const starts = findOldStringOccurrences(
+      base,
+      oldString,
+      input.replace_all === true,
+    );
+    if (starts.length === 0) {
+      const warning = buildNotFoundWarning(oldString, newString);
+      return { title, diff: warning };
+    }
+    const newText = buildNewText(base, starts, oldString, newString);
+    return {
+      title,
+      diff: generateDiffString(base, newText, undefined, { path }).diff,
+      filePath: path,
+    };
+  }
+
+  const content = input.content;
+  if (typeof content === 'string') {
+    return {
+      title,
+      diff: generateDiffString(base, content, undefined, { path }).diff,
+      filePath: path,
+    };
+  }
+
+  const diff = buildRawArgsView(
+    'Non-replace edit mode — showing raw arguments',
+    input,
+  );
+  return { title, diff };
+}
 
 /** Theme-aware coloring that degrades gracefully when a color name is missing. */
 function fg(
@@ -49,26 +137,6 @@ function fg(
   } catch {
     return text;
   }
-}
-
-/** Colorize each diff line by its prefix (theme comes from the custom() factory). */
-function buildPayloadView(payload: ReviewPayload, theme: unknown): string[] {
-  const lines = payload.diff.split('\n');
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  const out: string[] = [];
-  for (const line of lines) {
-    if (line.startsWith('@@')) out.push(fg(theme, 'accent', line, 'accent'));
-    else if (line.startsWith('+++') || line.startsWith('---'))
-      out.push(fg(theme, 'muted', line, 'dim'));
-    else if (line.startsWith('+'))
-      out.push(fg(theme, 'success', line, 'accent'));
-    else if (line.startsWith('-'))
-      out.push(fg(theme, 'danger', line, 'accent'));
-    else if (line.startsWith('⚠'))
-      out.push(fg(theme, 'danger', line, 'accent'));
-    else out.push(line);
-  }
-  return out;
 }
 
 /** Full-diff review overlay: scrollable diff body + approve/deny keybindings. */
@@ -198,9 +266,13 @@ export default function extension(pi: ExtensionAPI): void {
         ok = await ctx.ui.custom<boolean>(
           (tui, theme, keybindings, done) => {
             try {
+              // omp's native diff renderer: colors, gutter, intra-line highlight.
+              const colored = renderDiff(payload.diff, {
+                filePath: payload.filePath,
+              });
               return new FullDiffReview(
                 payload.title,
-                buildPayloadView(payload, theme),
+                colored.split('\n'),
                 keybindings,
                 done,
                 theme,

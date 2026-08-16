@@ -14,12 +14,14 @@ agent will change, then approve or deny for real.
 
 - The extension listens on the `tool_call` event, which omp fires **before**
   the approval gate (`ExtensionToolWrapper.execute`).
-- For `edit` (replace mode) it builds a hunk diff from `path` +
-  `old_string`/`new_string` by reading the current file. For `write` it builds
-  a whole-file LCS diff against the existing content.
-- The diff is rendered in a custom overlay via `ctx.ui.custom(...)`,
-  replacing the native approve/deny dialog (requires `edit`/`write` to be set
-  to `allow` in config).
+- For `edit` (replace mode) it reads the current file, applies the replacement
+  in memory, and diffs old vs new content with omp's own `generateDiffString`.
+  For `write` it diffs the existing file against the new content the same way.
+- The diff is rendered with omp's native `renderDiff` (same `toolDiffAdded` /
+  `toolDiffRemoved` colors, line-number gutter, and intra-line word-level
+  highlighting of changed tokens), shown in a custom overlay via
+  `ctx.ui.custom(...)` — so the review looks identical to omp's built-in
+  edit/write diff display, but with the full content reachable via scrolling.
 - **Approve** (`y`/Enter): the handler returns nothing, the tool runs with its
   original input.
 - **Deny** (`n`/Esc): the handler returns `{ block: true, reason }` — the tool
