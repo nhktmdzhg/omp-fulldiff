@@ -54,11 +54,18 @@ tools:
 
 Restart omp.
 
-To update after a new push:
+To update after a new push (the git install tracks the default branch, so a
+re-install pulls the latest commit; `--force` re-resolves without prompting):
 
 ```bash
-omp plugin upgrade omp-fulldiff
+omp plugin install https://github.com/nhktmdzhg/omp-fulldiff.git --force
 ```
+
+The displayed version (`omp-fulldiff@0.1.0`) comes from `package.json` at the
+installed commit — bump `version` in `package.json` before pushing so the
+re-install shows the new version. Git tags are not required for this flow
+(installs track the default branch, not tags); create tags only if you want
+pinned installs (e.g. `github:nhktmdzhg/omp-fulldiff#v0.1.0`).
 
 > Alternative (no plugin): copy both files from `src/` into
 > `~/.omp/agent/extensions/` (omp loads `*.ts` files there directly), or clone
