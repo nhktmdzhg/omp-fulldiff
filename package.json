@@ -1,0 +1,38 @@
+{
+  "name": "omp-fulldiff",
+  "version": "0.1.0",
+  "description": "oh-my-pi extension: full-diff approval screen for edit/write tool calls",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nguyen Hoang Ky",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nhktmdzhd/omp-fulldiff.git"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "extension",
+    "diff",
+    "approval",
+    "tui"
+  ],
+  "files": [
+    "src"
+  ],
+  "main": "./src/full-diff-approval.ts",
+  "exports": {
+    ".": "./src/full-diff-approval.ts"
+  },
+  "omp": {
+    "extensions": [
+      "./src/full-diff-approval.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "engines": {
+    "bun": ">=1.0"
+  }
+}
