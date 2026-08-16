@@ -35,23 +35,34 @@ agent will change, then approve or deny for real.
 
 ## Install
 
-1. Clone this repo (or copy `src/` somewhere).
+Install straight from GitHub as an omp plugin (the repo's `omp.extensions`
+manifest loads the extension automatically):
 
-2. Edit `~/.omp/agent/config.yml`:
+```bash
+omp plugin install https://github.com/nhktmdzhg/omp-fulldiff.git
+```
 
-   ```yaml
-   tools:
-     approval:
-       edit: allow # was: prompt
-       write: allow # was: prompt
-   extensions:
-     - /path/to/omp-fulldiff/src/full-diff-approval.ts
-   ```
+Then edit `~/.omp/agent/config.yml` to set `edit`/`write` to `allow` (the
+extension replaces the native approval dialog, so the native one must be off):
 
-   Alternatively, copy both files from `src/` into `~/.omp/agent/extensions/`
-   (omp loads `*.ts` files there directly).
+```yaml
+tools:
+  approval:
+    edit: allow # was: prompt
+    write: allow # was: prompt
+```
 
-3. Restart omp.
+Restart omp.
+
+To update after a new push:
+
+```bash
+omp plugin upgrade omp-fulldiff
+```
+
+> Alternative (no plugin): copy both files from `src/` into
+> `~/.omp/agent/extensions/` (omp loads `*.ts` files there directly), or clone
+> the repo and point `extensions:` at `src/full-diff-approval.ts`.
 
 > Note: `write: allow` also bypasses the native approval for internal URL
 > writes (`xd://...`, `memory://...`, ...). The extension still reviews every
