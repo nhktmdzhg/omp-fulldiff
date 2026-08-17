@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
   classifyBashApproval,
-  extractShellSegments,
   globToRegExp,
   normalizePattern,
   parseBashPatternRules,
@@ -66,97 +65,122 @@ describe('parseBashPatternRules', () => {
   });
 });
 
-describe('extractShellSegments', () => {
-  test('pipe splits segments, preserving quotes', () => {
-    expect(extractShellSegments('grep "hello" | head -n 5')).toEqual([
-      'grep "hello"',
-      'head -n 5',
-    ]);
-  });
-
-  test('&&, ||, ;, & and newlines are boundaries', () => {
-    expect(extractShellSegments('a && b || c; d & e')).toEqual([
-      'a',
-      'b',
-      'c',
-      'd',
-      'e',
-    ]);
-    expect(extractShellSegments('cd /tmp\nls -la')).toEqual([
-      'cd /tmp',
-      'ls -la',
-    ]);
-  });
-
-  test('quoted operators are not boundaries', () => {
-    expect(extractShellSegments('echo "a|b"')).toEqual(['echo "a|b"']);
-    expect(extractShellSegments("echo 'a && b'")).toEqual(["echo 'a && b'"]);
-  });
-
-  test('double operator || collapses into one boundary', () => {
-    expect(extractShellSegments('grep x || echo y')).toEqual([
-      'grep x',
-      'echo y',
-    ]);
-  });
-
-  test('unparseable syntax bails with []', () => {
-    expect(extractShellSegments('ls $(echo x)')).toEqual([]);
-    expect(extractShellSegments('echo `hi`')).toEqual([]);
-    expect(extractShellSegments('cat <<EOF')).toEqual([]);
-    expect(extractShellSegments("echo 'unclosed")).toEqual([]);
-  });
-});
-
 describe('classifyBashApproval', () => {
   test('compound command fully covered by allow → allow', () => {
     const rules = [allow('grep *'), allow('head *')];
-    const result = classifyBashApproval('grep "hello" | head -n 5', rules);
+    const result = classifyBashApproval(
+      'grep "hello" | head -n 5',
+      rules,
+      ['grep "hello"', 'head -n 5'], // flat: extractFlatShellCommandSegments
+      ['grep hello', 'head -n 5'], // tokenized: tokenizeShellSegments
+    );
     expect(result.kind).toBe('allow');
   });
 
   test('compound command with an uncovered segment → ask', () => {
     const rules = [allow('grep *')];
-    expect(classifyBashApproval('grep x | head -n 5', rules).kind).toBe('ask');
     expect(
-      classifyBashApproval('grep x && echo y', [
-        allow('grep *'),
-        allow('echo *'),
-      ]).kind,
+      classifyBashApproval(
+        'grep x | head -n 5',
+        rules,
+        ['grep x', 'head -n 5'],
+        ['grep x', 'head -n 5'],
+      ).kind,
+    ).toBe('ask');
+    expect(
+      classifyBashApproval(
+        'grep x && echo y',
+        [allow('grep *'), allow('echo *')],
+        ['grep x', 'echo y'],
+        ['grep x', 'echo y'],
+      ).kind,
     ).toBe('allow');
   });
 
   test('simple command covered → allow, uncovered → ask', () => {
-    expect(classifyBashApproval('ls -la', [allow('ls *')]).kind).toBe('allow');
-    expect(classifyBashApproval('git commit -m x', [allow('ls *')]).kind).toBe(
+    expect(
+      classifyBashApproval('ls -la', [allow('ls *')], ['ls -la'], ['ls -la'])
+        .kind,
+    ).toBe('allow');
+    expect(
+      classifyBashApproval(
+        'git commit -m x',
+        [allow('ls *')],
+        ['git commit -m x'],
+        ['git commit -m x'],
+      ).kind,
+    ).toBe('ask');
+  });
+
+  test('unparseable syntax (empty segments) → ask even if patterns look covering', () => {
+    const rules = [allow('ls *'), allow('echo *')];
+    // omp's tokenizer returns [] for $(...)/backticks/heredocs — caller passes
+    // that through; no segments means no allow coverage.
+    expect(classifyBashApproval('ls $(echo x)', rules, [], []).kind).toBe(
       'ask',
     );
   });
 
-  test('unparseable syntax → ask even if patterns look covering', () => {
-    const rules = [allow('ls *'), allow('echo *')];
-    expect(classifyBashApproval('ls $(echo x)', rules).kind).toBe('ask');
-  });
-
   test('deny rule fires on whole command or any segment', () => {
     const rules = [allow('cd *'), deny('rm -rf *')];
-    expect(classifyBashApproval('cd x && rm -rf /', rules).kind).toBe('deny');
-    expect(classifyBashApproval('rm -rf /', rules).kind).toBe('deny');
     expect(
-      classifyBashApproval('cd /tmp && ls -la', [allow('cd *'), allow('ls *')])
-        .kind,
+      classifyBashApproval(
+        'cd x && rm -rf /',
+        rules,
+        ['cd x', 'rm -rf /'],
+        ['cd x', 'rm -rf /'],
+      ).kind,
+    ).toBe('deny');
+    expect(
+      classifyBashApproval('rm -rf /', rules, ['rm -rf /'], ['rm -rf /']).kind,
+    ).toBe('deny');
+    expect(
+      classifyBashApproval(
+        'cd /tmp && ls -la',
+        [allow('cd *'), allow('ls *')],
+        ['cd /tmp', 'ls -la'],
+        ['cd /tmp', 'ls -la'],
+      ).kind,
     ).toBe('allow');
+  });
+
+  test('deny matches quote-stripped tokenized segments (native parity)', () => {
+    const rules = [allow('cd *'), deny('rm -rf *')];
+    // Flat `rm "-rf" /` does not match `rm -rf *` (quotes preserved); the
+    // tokenized `rm -rf /` does — same data omp's native matcher uses.
+    expect(
+      classifyBashApproval(
+        'cd x && rm "-rf" /',
+        rules,
+        ['cd x', 'rm "-rf" /'],
+        ['cd x', 'rm -rf /'],
+      ).kind,
+    ).toBe('deny');
   });
 
   test('prompt rule → prompt', () => {
     const rules = [allow('ls *'), prompt('git commit *')];
-    expect(classifyBashApproval('git commit -m x', rules).kind).toBe('prompt');
-    expect(classifyBashApproval('git commit -m x && ls -la', rules).kind).toBe(
-      'prompt',
-    );
+    expect(
+      classifyBashApproval(
+        'git commit -m x',
+        rules,
+        ['git commit -m x'],
+        ['git commit -m x'],
+      ).kind,
+    ).toBe('prompt');
+    expect(
+      classifyBashApproval(
+        'git commit -m x && ls -la',
+        rules,
+        ['git commit -m x', 'ls -la'],
+        ['git commit -m x', 'ls -la'],
+      ).kind,
+    ).toBe('prompt');
   });
 
   test('no rules → ask for anything', () => {
-    expect(classifyBashApproval('ls -la', []).kind).toBe('ask');
+    expect(
+      classifyBashApproval('ls -la', [], ['ls -la'], ['ls -la']).kind,
+    ).toBe('ask');
   });
 });

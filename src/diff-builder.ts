@@ -4,7 +4,7 @@
  * This module must NOT import anything from `@oh-my-pi/*` — it runs standalone
  * so `bun test` works locally without the pi packages installed. Actual diff
  * generation and rendering are delegated to omp's own `generateDiffString`
- * and `renderDiff` (see full-diff-approval.ts) so the overlay looks identical
+ * and `renderDiff` (see index.ts) so the overlay looks identical
  * to omp's native edit/write diff display.
  */
 

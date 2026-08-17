@@ -73,7 +73,7 @@ pinned installs (e.g. `github:nhktmdzhg/omp-fulldiff#v0.1.0`).
 
 > Alternative (no plugin): copy both files from `src/` into
 > `~/.omp/agent/extensions/` (omp loads `*.ts` files there directly), or clone
-> the repo and point `extensions:` at `src/full-diff-approval.ts`.
+> the repo and point `extensions:` at `src/index.ts`.
 
 > Note: `write: allow` also bypasses the native approval for internal URL
 > writes (`xd://...`, `memory://...`, ...). The extension still reviews every
@@ -89,8 +89,8 @@ when it has **no** shell control (`|`, `||`, `&&`, `;`, `&`, ...) — see
 `allow` patterns in `tools.bash.patterns`.
 
 With `tools.approval.bash: allow`, this extension becomes the bash gate and
-re-evaluates per segment (replicating omp's glob → regex conversion and its
-quote-aware shell tokenizer):
+re-evaluates per segment (replicating omp's glob → regex conversion and using
+omp's own quote-aware shell tokenizer):
 
 - **Every segment covered** by an `allow` pattern → the command runs without
   prompting (`grep "hello" | head -n 5` with `grep *` + `head *` → runs).
@@ -102,9 +102,11 @@ quote-aware shell tokenizer):
   the native gate, keeping their original behavior and UI (a deny rule still
   blocks, a prompt rule still prompts with omp's own dialog).
 
-Segmentation and matching replicate omp's internals exactly (anchored glob
-regex with `u` flag, `extractFlatShellCommandSegments` semantics), so a
-command that matches a pattern natively matches it here too. Uncovered simple
+Segmentation uses omp's own tokenizer directly (imported from
+`@oh-my-pi/pi-coding-agent/tools/shell-tokenize`: `extractFlatShellCommandSegments`
+for allow coverage, `tokenizeShellSegments` for deny/prompt), and glob matching
+replicates omp's anchored-regex conversion exactly (`u` flag), so a command
+that matches a pattern natively matches it here too. Uncovered simple
 commands (e.g. `git commit -m ...` with no matching pattern) still prompt,
 just like omp's `prompt` policy did.
 

@@ -20,13 +20,13 @@
   "files": [
     "src"
   ],
-  "main": "./src/full-diff-approval.ts",
+  "main": "./src/index.ts",
   "exports": {
-    ".": "./src/full-diff-approval.ts"
+    ".": "./src/index.ts"
   },
   "omp": {
     "extensions": [
-      "./src/full-diff-approval.ts"
+      "./src/index.ts"
     ]
   },
   "scripts": {

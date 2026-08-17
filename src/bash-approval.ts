@@ -1,5 +1,5 @@
 /**
- * Bash compound-command approval logic for the full-diff approval extension.
+ * Bash compound-command approval logic for the omp-fulldiff extension.
  *
  * omp's native bash approval only lets an `allow` pattern vouch for a command
  * when the command has NO shell control (`|`, `||`, `&&`, `;`, `&`, ...) — see
@@ -10,14 +10,16 @@
  * if EVERY segment of a compound command is covered by some `allow` pattern,
  * the command may run without prompting; anything else falls through to a
  * prompt. `deny`/`prompt` rules keep omp's native semantics (whole command or
- * any segment). All matching replicates omp's own primitives:
+ * any tokenized segment). Pattern matching replicates omp's own primitive:
  *
  * - glob patterns are converted to anchored regexes exactly like
  *   `bashApprovalPatternToRegExp` (split on `*`, escape regex chars, `^...$`,
  *   `u` flag);
- * - segmentation replicates `extractFlatShellCommandSegments` (quote/escape
- *   aware; conservative — unparseable syntax returns [] so the command cannot
- *   be auto-allowed).
+ * - segmentation is done by the CALLER with omp's own tokenizer (imported from
+ *   `@oh-my-pi/pi-coding-agent/tools/shell-tokenize`): flat segments from
+ *   `extractFlatShellCommandSegments` (quotes preserved) drive allow coverage,
+ *   quote-stripped `tokenizeShellSegments` output drives deny/prompt — the
+ *   same data omp's native matcher (`bashCommandSegments`) uses.
  *
  * Pure module: no `@oh-my-pi/*` imports, so `bun test` runs standalone.
  */
@@ -80,134 +82,25 @@ export function parseBashPatternRules(value: unknown): BashPatternRule[] {
   return rules;
 }
 
-/**
- * Split a bash command into independent segments, preserving each segment's
- * original text (quotes/escapes intact). Replicates omp's
- * `extractFlatShellCommandSegments`: boundaries are `|`, `||`, `|&`, `&&`, `;`,
- * `&` and newlines outside quotes; `\n`-continuations are preserved; comments
- * are dropped. Returns [] for syntax the conservative scanner cannot handle
- * (heredocs, command substitution, backticks, grouping, malformed quotes) so
- * callers treat the command as unverifiable and never auto-allow it.
- */
-export function extractShellSegments(command: string): string[] {
-  const segments: string[] = [];
-  let segmentStart = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let atWordStart = true;
-
-  const pushSegment = (end: number): boolean => {
-    const segment = command.slice(segmentStart, end).trim();
-    if (segment.length === 0) return false;
-    segments.push(segment);
-    return true;
-  };
-
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (inSingle) {
-      if (ch === "'") inSingle = false;
-      continue;
-    }
-    if (inDouble) {
-      if (ch === '\\') {
-        if (i + 1 >= command.length) return [];
-        i++;
-        continue;
-      }
-      if (ch === '"') {
-        inDouble = false;
-        continue;
-      }
-      if (ch === '`' || (ch === '$' && command[i + 1] === '(')) return [];
-      continue;
-    }
-
-    if (ch === "'") {
-      inSingle = true;
-      atWordStart = false;
-      continue;
-    }
-    if (ch === '"') {
-      inDouble = true;
-      atWordStart = false;
-      continue;
-    }
-    if (ch === '\\') {
-      if (i + 1 >= command.length) return [];
-      i++;
-      atWordStart = false;
-      continue;
-    }
-    if (
-      ch === '`' ||
-      ch === '(' ||
-      ch === ')' ||
-      (ch === '$' && command[i + 1] === '(') ||
-      (ch === '$' && command[i + 1] === '{') ||
-      (ch === '<' && command[i + 1] === '<') ||
-      ((ch === '{' || ch === '}') &&
-        atWordStart &&
-        (command[i + 1] === undefined || /[ \t\n;]/.test(command[i + 1])))
-    ) {
-      return [];
-    }
-    if (ch === '#' && atWordStart) {
-      pushSegment(i);
-      const newline = command.indexOf('\n', i + 1);
-      if (newline === -1) return segments;
-      i = newline;
-      segmentStart = newline + 1;
-      atWordStart = true;
-      continue;
-    }
-    const isRedirectionOperatorCharacter =
-      ch === '|'
-        ? command[i - 1] === '>'
-        : ch === '&'
-          ? command[i - 1] === '>' ||
-            command[i - 1] === '<' ||
-            command[i + 1] === '>'
-          : false;
-    if (
-      (ch === '\n' || ch === ';' || ch === '|' || ch === '&') &&
-      !isRedirectionOperatorCharacter
-    ) {
-      pushSegment(i);
-      const doubled = (ch === '|' || ch === '&') && command[i + 1] === ch;
-      const pipeStderr = ch === '|' && command[i + 1] === '&';
-      if (doubled || pipeStderr) i++;
-      segmentStart = i + 1;
-      atWordStart = true;
-      continue;
-    }
-    atWordStart = ch === ' ' || ch === '\t';
-  }
-
-  if (inSingle || inDouble) return [];
-  pushSegment(command.length);
-  return segments;
-}
-
 export type BashApprovalKind = 'deny' | 'prompt' | 'allow' | 'ask';
 
 export interface BashApprovalClassification {
   kind: BashApprovalKind;
-  /** deny rules that fired (whole command or any segment). */
+  /** deny rules that fired (whole command or any tokenized segment). */
   denyRules: BashPatternRule[];
-  /** prompt rules that fired (whole command or any segment). */
+  /** prompt rules that fired (whole command or any tokenized segment). */
   promptRules: BashPatternRule[];
-  /** Segments the command was split into ([] when unparseable). */
-  segments: string[];
 }
 
 function ruleMatchesCommandOrSegment(
   rule: BashPatternRule,
   normalizedCommand: string,
-  segments: string[],
+  tokenizedSegments: string[],
 ): boolean {
   if (patternMatches(rule.match, normalizedCommand)) return true;
-  return segments.some((segment) => patternMatches(rule.match, segment));
+  return tokenizedSegments.some((segment) =>
+    patternMatches(rule.match, segment),
+  );
 }
 
 /**
@@ -216,43 +109,62 @@ function ruleMatchesCommandOrSegment(
  * - "prompt": a prompt rule matched → the native gate shows the original prompt.
  * - "allow": every segment is covered by an allow rule → run without prompting.
  * - "ask": some segment is uncovered (or the command is unparseable) → prompt.
+ *
+ * Segments come precomputed from the caller (omp's own tokenizer): `segments`
+ * = flat `extractFlatShellCommandSegments` output (original text, quotes
+ * preserved) driving allow coverage; `tokenizedSegments` =
+ * `tokenizeShellSegments` output joined with a space (quotes stripped) driving
+ * deny/prompt — the exact data omp's native matcher uses.
  */
 export function classifyBashApproval(
   command: string,
   rules: readonly BashPatternRule[],
+  segments: string[],
+  tokenizedSegments: string[],
 ): BashApprovalClassification {
   const normalizedCommand = normalizePattern(command);
-  const segments = extractShellSegments(command)
+  const normalizedSegments = segments
+    .map((segment) => normalizePattern(segment))
+    .filter((segment) => segment.length > 0);
+  const normalizedTokenizedSegments = tokenizedSegments
     .map((segment) => normalizePattern(segment))
     .filter((segment) => segment.length > 0);
 
   const denyRules = rules.filter(
     (rule) =>
       rule.approval === 'deny' &&
-      ruleMatchesCommandOrSegment(rule, normalizedCommand, segments),
+      ruleMatchesCommandOrSegment(
+        rule,
+        normalizedCommand,
+        normalizedTokenizedSegments,
+      ),
   );
   if (denyRules.length > 0) {
-    return { kind: 'deny', denyRules, promptRules: [], segments };
+    return { kind: 'deny', denyRules, promptRules: [] };
   }
 
   const promptRules = rules.filter(
     (rule) =>
       rule.approval === 'prompt' &&
-      ruleMatchesCommandOrSegment(rule, normalizedCommand, segments),
+      ruleMatchesCommandOrSegment(
+        rule,
+        normalizedCommand,
+        normalizedTokenizedSegments,
+      ),
   );
   if (promptRules.length > 0) {
-    return { kind: 'prompt', denyRules, promptRules, segments };
+    return { kind: 'prompt', denyRules, promptRules };
   }
 
   const allowRules = rules.filter((rule) => rule.approval === 'allow');
   if (
-    segments.length > 0 &&
-    segments.every((segment) =>
+    normalizedSegments.length > 0 &&
+    normalizedSegments.every((segment) =>
       allowRules.some((rule) => patternMatches(rule.match, segment)),
     )
   ) {
-    return { kind: 'allow', denyRules, promptRules, segments };
+    return { kind: 'allow', denyRules, promptRules };
   }
 
-  return { kind: 'ask', denyRules, promptRules, segments };
+  return { kind: 'ask', denyRules, promptRules };
 }

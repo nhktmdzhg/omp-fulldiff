@@ -24,6 +24,10 @@ import {
   settings,
   type ExtensionAPI,
 } from '@oh-my-pi/pi-coding-agent';
+import {
+  extractFlatShellCommandSegments,
+  tokenizeShellSegments,
+} from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
 import type { Component } from '@oh-my-pi/pi-tui';
 import {
   extractPrintableText,
@@ -81,7 +85,16 @@ async function gateBashCommand(
   ui: BashCallContext,
 ): Promise<{ block: true; reason: string } | undefined> {
   const rules = parseBashPatternRules(settings.get('bash.patterns'));
-  const classification = classifyBashApproval(command, rules);
+  const segments = extractFlatShellCommandSegments(command).map((s) => s.text);
+  const tokenizedSegments = tokenizeShellSegments(command).map((s) =>
+    s.join(' '),
+  );
+  const classification = classifyBashApproval(
+    command,
+    rules,
+    segments,
+    tokenizedSegments,
+  );
 
   if (classification.kind === 'deny' || classification.kind === 'prompt') {
     // Native gate handles these with its own message/UI.
