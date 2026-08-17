@@ -1,27 +1,29 @@
 /**
- * omp-fulldiff — oh-my-pi extension: full-diff approval screen for edit/write.
+ * omp-fulldiff — oh-my-pi extension: full-diff approval screen for edit/write
+ * and per-segment bash approval.
  *
- * Approach: intercept `tool_call` BEFORE the native approval gate, open a
+ * Edit/write: intercept `tool_call` BEFORE the native approval gate, open a
  * custom overlay that shows the FULL diff (j/k scrolling), and let the user
- * approve or deny:
- * - approve: the handler returns nothing → the tool runs with the original input.
- * - deny: the handler returns `{ block: true, reason }` → the tool never runs
- *   and the reason is surfaced to the LLM (verified in ExtensionToolWrapper.execute:
- *   block → throw Error).
+ * approve or deny. The diff is rendered with omp's own primitives
+ * (`generateDiffString` + `renderDiff`) so it looks exactly like the native
+ * edit/write diff display. Requires `tools.approval.edit/write: allow`.
  *
- * The diff itself is rendered with omp's own primitives so the overlay looks
- * exactly like the native edit/write diff display:
- * - `generateDiffString` (@oh-my-pi/pi-coding-agent/edit) produces the numbered
- *   `+<lineNum>|content` diff format omp uses internally;
- * - `renderDiff` (@oh-my-pi/pi-coding-agent) paints it with the native theme
- *   (toolDiffRemoved/toolDiffAdded/toolDiffContext) including intra-line
- *   word-level highlighting of the changed tokens.
- *
- * Requirement: `tools.approval.edit/write: allow` in config — otherwise the
- * native approval dialog also appears (tool_call fires before the approval gate).
+ * Bash: omp's native `allow` patterns never apply to compound commands (shell
+ * control like `|`, `||`, `&&`), so `grep "hello" | head -n 5` prompts even
+ * when both sides match `tools.bash.patterns`. With `tools.approval.bash:
+ * allow`, this extension gates the call instead: if EVERY segment is covered
+ * by an `allow` pattern the command runs without prompting; otherwise the
+ * native-style select prompt appears (same dialog component the native
+ * approval uses). `deny`/`prompt` rules and omp's critical patterns are left
+ * to the native gate so they keep their original behavior and UI.
  */
 import { generateDiffString } from '@oh-my-pi/pi-coding-agent/edit';
-import { renderDiff, type ExtensionAPI } from '@oh-my-pi/pi-coding-agent';
+import {
+  CRITICAL_BASH_PATTERNS,
+  renderDiff,
+  settings,
+  type ExtensionAPI,
+} from '@oh-my-pi/pi-coding-agent';
 import type { Component } from '@oh-my-pi/pi-tui';
 import {
   extractPrintableText,
@@ -29,6 +31,7 @@ import {
   replaceTabs,
   truncateToWidth,
 } from '@oh-my-pi/pi-tui';
+import { classifyBashApproval, parseBashPatternRules } from './bash-approval';
 import {
   buildNewText,
   buildNotFoundWarning,
@@ -41,8 +44,76 @@ import {
 /** Number of diff lines shown in the overlay window (terminal height is unknown at render). */
 const BODY_ROWS = 24;
 
-/** Serialize reviews: `custom()` is modal, one at a time (the agent may issue several edits in a turn). */
+/** Serialize modal UI (`custom()`/`select()` are one-at-a-time). */
 let gate: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gate.then(fn);
+  gate = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Truncate a command for the approval prompt, mirroring omp's truncateForPrompt. */
+function truncateCommand(command: string, maxChars = 2000): string {
+  if (command.length <= maxChars) return command;
+  const omitted = command.length - maxChars;
+  return `${command.slice(0, maxChars)}[…${omitted}ch elided…]`;
+}
+
+interface BashCallContext {
+  hasUI: boolean;
+  select: (title: string, options: string[]) => Promise<string | undefined>;
+}
+
+/**
+ * Gate a bash tool call:
+ * - deny/prompt rules or omp critical patterns → return undefined (the native
+ *   gate rejects or prompts with its original UI);
+ * - every segment covered by an allow pattern → return undefined (auto-run);
+ * - otherwise → show the native-style select prompt; approve runs, deny blocks.
+ * Returns a `tool_call` handler result (undefined = let the tool proceed).
+ */
+async function gateBashCommand(
+  command: string,
+  ui: BashCallContext,
+): Promise<{ block: true; reason: string } | undefined> {
+  const rules = parseBashPatternRules(settings.get('bash.patterns'));
+  const classification = classifyBashApproval(command, rules);
+
+  if (classification.kind === 'deny' || classification.kind === 'prompt') {
+    // Native gate handles these with its own message/UI.
+    return undefined;
+  }
+  if (CRITICAL_BASH_PATTERNS.some((pattern) => pattern.test(command))) {
+    // Native gate prompts for safety-critical commands — avoid a double prompt.
+    return undefined;
+  }
+  if (classification.kind === 'allow') {
+    return undefined; // every segment covered → run without prompting
+  }
+
+  // "ask": some segment is not covered by an allow pattern.
+  if (!ui.hasUI) {
+    return {
+      block: true,
+      reason: 'Bash command requires approval but no interactive UI available',
+    };
+  }
+  const approved = await enqueue(async () => {
+    const choice = await ui.select(
+      `Allow tool: bash\nCommand: ${truncateCommand(command)}`,
+      ['Approve', 'Deny'],
+    );
+    return choice === 'Approve';
+  });
+  if (!approved) {
+    return { block: true, reason: 'Denied by user (bash approval)' };
+  }
+  return undefined;
+}
 
 interface ReviewPayload {
   title: string;
@@ -251,6 +322,16 @@ class FullDiffReview implements Component {
 
 export default function extension(pi: ExtensionAPI): void {
   pi.on('tool_call', async (event, ctx) => {
+    if (event.toolName === 'bash') {
+      const input = (event.input ?? {}) as Record<string, unknown>;
+      const command = typeof input.command === 'string' ? input.command : '';
+      if (command.length === 0) return; // let the native tool report the error
+      return gateBashCommand(command, {
+        hasUI: ctx.hasUI,
+        select: (title, options) => ctx.ui.select(title, options),
+      });
+    }
+
     if (event.toolName !== 'edit' && event.toolName !== 'write') return;
     if (!ctx.hasUI) return; // headless/RPC: same as `allow` policy — no review
 
@@ -259,11 +340,10 @@ export default function extension(pi: ExtensionAPI): void {
       typeof ctx.cwd === 'string' ? ctx.cwd : process.cwd()
     ) as string;
 
-    const run = gate.then(async (): Promise<boolean> => {
+    const ok = await enqueue(async (): Promise<boolean> => {
       const payload = await buildReviewPayload(input, cwd, event.toolName);
-      let ok: boolean;
       try {
-        ok = await ctx.ui.custom<boolean>(
+        return await ctx.ui.custom<boolean>(
           (tui, theme, keybindings, done) => {
             try {
               // omp's native diff renderer: colors, gutter, intra-line highlight.
@@ -286,15 +366,9 @@ export default function extension(pi: ExtensionAPI): void {
         );
       } catch {
         // UI failed to open (non-interactive mode); already guarded by hasUI.
-        ok = false;
+        return false;
       }
-      return ok;
     });
-    gate = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    const ok = await run;
     if (ok === false) {
       return { block: true, reason: 'Denied by user (full diff review)' };
     }

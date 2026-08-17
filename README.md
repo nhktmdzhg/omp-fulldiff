@@ -1,14 +1,17 @@
 # omp-fulldiff
 
-An [oh-my-pi](https://github.com/can1357/oh-my-pi) extension that replaces the
-default tool-approval dialog for `edit`/`write` calls with a **full, scrollable
-diff** review overlay.
+An [oh-my-pi](https://github.com/can1357/oh-my-pi) extension with two
+approval features:
 
-The native approval dialog renders the tool arguments inside a static,
-non-scrollable header — anything beyond the viewport is unreachable. This
-extension intercepts `edit`/`write` before the native approval gate and shows
-the complete diff (with j/k scrolling), letting you review exactly what the
-agent will change, then approve or deny for real.
+1. **Full-diff edit/write review** — replaces the default approval dialog for
+   `edit`/`write` calls with a full, scrollable diff overlay (omp's native
+   approval dialog renders tool arguments in a static header, so anything
+   beyond the viewport is unreachable).
+2. **Per-segment bash approval** — omp's native `allow` patterns never apply
+   to compound commands (`grep "hello" | head -n 5` prompts even when both
+   sides match `tools.bash.patterns`). The extension splits the command into
+   segments (quote-aware) and auto-runs it only when **every** segment is
+   covered by an `allow` pattern; everything else prompts.
 
 ## How it works
 
@@ -29,8 +32,7 @@ agent will change, then approve or deny for real.
 
 ## Requirements
 
-- oh-my-pi (omp) with interactive TUI mode (`ctx.hasUI`). In headless/RPC
-  sessions the extension skips review, matching the `allow` policy semantics.
+- oh-my-pi (omp) with interactive TUI mode (`ctx.hasUI`).
 - omp loads extensions with its own Bun runtime — no separate build step.
 
 ## Install
@@ -42,14 +44,16 @@ manifest loads the extension automatically):
 omp plugin install https://github.com/nhktmdzhg/omp-fulldiff.git
 ```
 
-Then edit `~/.omp/agent/config.yml` to set `edit`/`write` to `allow` (the
-extension replaces the native approval dialog, so the native one must be off):
+Then edit `~/.omp/agent/config.yml` to set `edit`/`write`/`bash` to `allow`
+(the extension replaces the native approval dialogs, so the native ones must
+be off):
 
 ```yaml
 tools:
   approval:
     edit: allow # was: prompt
     write: allow # was: prompt
+    bash: allow # was: prompt
 ```
 
 Restart omp.
@@ -76,10 +80,42 @@ pinned installs (e.g. `github:nhktmdzhg/omp-fulldiff#v0.1.0`).
 > `edit`/`write` call in interactive sessions — internal-URL writes show the
 > raw arguments instead of a diff since there is no file to diff.
 
+## Bash approval
+
+omp's native bash approval only lets an `allow` pattern vouch for a command
+when it has **no** shell control (`|`, `||`, `&&`, `;`, `&`, ...) — see
+`hasBashApprovalShellControl` in omp's `tools/bash.ts`. So
+`grep "hello" | head -n 5` prompts even when both `grep *` and `head *` are
+`allow` patterns in `tools.bash.patterns`.
+
+With `tools.approval.bash: allow`, this extension becomes the bash gate and
+re-evaluates per segment (replicating omp's glob → regex conversion and its
+quote-aware shell tokenizer):
+
+- **Every segment covered** by an `allow` pattern → the command runs without
+  prompting (`grep "hello" | head -n 5` with `grep *` + `head *` → runs).
+- **Any segment uncovered** (or the command is unparseable — `$(...)`,
+  backticks, heredocs, malformed quotes) → the native-style select prompt
+  appears (`Allow tool: bash / Command: ...` with Approve/Deny — the same
+  dialog component omp's own approval uses). Deny blocks the call.
+- **`deny` / `prompt` rules and omp's safety-critical patterns** are left to
+  the native gate, keeping their original behavior and UI (a deny rule still
+  blocks, a prompt rule still prompts with omp's own dialog).
+
+Segmentation and matching replicate omp's internals exactly (anchored glob
+regex with `u` flag, `extractFlatShellCommandSegments` semantics), so a
+command that matches a pattern natively matches it here too. Uncovered simple
+commands (e.g. `git commit -m ...` with no matching pattern) still prompt,
+just like omp's `prompt` policy did.
+
+In headless/RPC sessions an uncovered command is **blocked** (fail-closed,
+no interactive UI to ask); fully covered commands still run.
+
 ## Usage
 
 Whenever the agent calls `edit` or `write`, an overlay opens with the full
-diff:
+diff. Bash commands with uncovered segments show an Approve/Deny select
+dialog. The overlay keys:
 
 | Key             | Action         |
 | --------------- | -------------- |
@@ -100,8 +136,8 @@ just without a computed diff.
 bun test
 ```
 
-The diff builder (`src/diff-builder.ts`) is dependency-free so tests run
-without the oh-my-pi packages.
+`src/diff-builder.ts` and `src/bash-approval.ts` are dependency-free so tests
+run without the oh-my-pi packages.
 
 ## License
 
