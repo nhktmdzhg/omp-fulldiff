@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   classifyBashApproval,
   globToRegExp,
+  hasRedirectOperator,
   normalizePattern,
   parseBashPatternRules,
   patternMatches,
@@ -62,6 +63,27 @@ describe('parseBashPatternRules', () => {
   test('non-array input → empty rules', () => {
     expect(parseBashPatternRules(undefined)).toEqual([]);
     expect(parseBashPatternRules({})).toEqual([]);
+  });
+});
+
+describe('hasRedirectOperator (redirect = shell control, native parity)', () => {
+  test('detects < and > outside quotes', () => {
+    expect(hasRedirectOperator('cat > /tmp/x')).toBe(true);
+    expect(hasRedirectOperator('cat >> log')).toBe(true);
+    expect(hasRedirectOperator('grep x < in.txt')).toBe(true);
+    expect(hasRedirectOperator('echo a 2>err')).toBe(true);
+    expect(hasRedirectOperator('cmd &> out')).toBe(true);
+  });
+
+  test('ignores redirect chars inside quotes and escapes', () => {
+    expect(hasRedirectOperator('echo ">"')).toBe(false);
+    expect(hasRedirectOperator("echo 'a < b'")).toBe(false);
+    expect(hasRedirectOperator('echo \\> x')).toBe(false);
+  });
+
+  test('compound without redirect → false', () => {
+    expect(hasRedirectOperator('grep x | head -n 5')).toBe(false);
+    expect(hasRedirectOperator('ls && echo hi')).toBe(false);
   });
 });
 

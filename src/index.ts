@@ -35,7 +35,11 @@ import {
   replaceTabs,
   truncateToWidth,
 } from '@oh-my-pi/pi-tui';
-import { classifyBashApproval, parseBashPatternRules } from './bash-approval';
+import {
+  classifyBashApproval,
+  hasRedirectOperator,
+  parseBashPatternRules,
+} from './bash-approval';
 import {
   buildNewText,
   buildNotFoundWarning,
@@ -85,6 +89,14 @@ async function gateBashCommand(
   ui: BashCallContext,
 ): Promise<{ block: true; reason: string } | undefined> {
   const rules = parseBashPatternRules(settings.get('bash.patterns'));
+  if (hasRedirectOperator(command)) {
+    // `<`/`>` redirects are shell control the flat tokenizer does not split
+    // on — `cat > out` would match `cat *` and auto-run a file-writing
+    // command. Delegate to the native gate (hasBashApprovalShellControl
+    // rejects these with its own prompt), so deny/prompt/critical handling
+    // and the native UI stay in charge.
+    return undefined;
+  }
   const segments = extractFlatShellCommandSegments(command).map((s) => s.text);
   const tokenizedSegments = tokenizeShellSegments(command).map((s) =>
     s.join(' '),

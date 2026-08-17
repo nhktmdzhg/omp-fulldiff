@@ -62,6 +62,40 @@ export function patternMatches(pattern: string, text: string): boolean {
   return regex.test(text);
 }
 
+/**
+ * True when the command contains a `<`/`>` redirect OUTSIDE quotes/escapes.
+ * The flat tokenizer does not split on redirects (`cat > out` stays one
+ * segment), so `cat *` would otherwise match and auto-run a file-writing
+ * command. Mirrors omp's quote-aware scan from `hasBashApprovalShellControl`
+ * (tools/bash.ts) restricted to the redirect characters; the native gate
+ * rejects commands with these, so the extension delegates instead of
+ * auto-allowing.
+ */
+export function hasRedirectOperator(command: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") {
+      if (ch === "'") quote = undefined;
+      continue;
+    }
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = undefined;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '<' || ch === '>') return true;
+  }
+  return false;
+}
+
 /** Parse `settings.get("bash.patterns")` into rules, mirroring getBashApprovalPatternRules. */
 export function parseBashPatternRules(value: unknown): BashPatternRule[] {
   if (!Array.isArray(value)) return [];
