@@ -65,11 +65,11 @@ re-install pulls the latest commit; `--force` re-resolves without prompting):
 omp plugin install https://github.com/nhktmdzhg/omp-fulldiff.git --force
 ```
 
-The displayed version (`omp-fulldiff@0.1.0`) comes from `package.json` at the
+The displayed version (`omp-fulldiff@0.2.0`) comes from `package.json` at the
 installed commit — bump `version` in `package.json` before pushing so the
 re-install shows the new version. Git tags are not required for this flow
 (installs track the default branch, not tags); create tags only if you want
-pinned installs (e.g. `github:nhktmdzhg/omp-fulldiff#v0.1.0`).
+pinned installs (e.g. `github:nhktmdzhg/omp-fulldiff#v0.2.0`).
 
 > Alternative (no plugin): copy both files from `src/` into
 > `~/.omp/agent/extensions/` (omp loads `*.ts` files there directly), or clone
@@ -98,6 +98,11 @@ omp's own quote-aware shell tokenizer):
   backticks, heredocs, malformed quotes) → the native-style select prompt
   appears (`Allow tool: bash / Command: ...` with Approve/Deny — the same
   dialog component omp's own approval uses). Deny blocks the call.
+- **Shell redirects** (`<` / `>` outside quotes) are never auto-allowed. The
+  native gate auto-runs any command an `allow` rule can't vouch for under
+  `bash: allow`, so delegating would let `cat > out` write files — the
+  extension prompts for redirects instead (quote-wrapped `>` such as
+  `echo ">"` is not treated as a redirect).
 - **`deny` / `prompt` rules and omp's safety-critical patterns** are left to
   the native gate, keeping their original behavior and UI (a deny rule still
   blocks, a prompt rule still prompts with omp's own dialog).
@@ -109,6 +114,14 @@ replicates omp's anchored-regex conversion exactly (`u` flag), so a command
 that matches a pattern natively matches it here too. Uncovered simple
 commands (e.g. `git commit -m ...` with no matching pattern) still prompt,
 just like omp's `prompt` policy did.
+
+Only list commands that are safe to auto-run with **any** arguments: an
+`allow` pattern vouches for the whole segment, so avoid tools with write/exec
+flags — `sed` (`-i`), `sort` (`-o`), `awk` (`system()`/`print >`), `tee`,
+`find` (`-delete`/`-exec`), `fd` (`-x`), `yq` (`-i`), `curl`/`wget` (`-o`),
+`dmesg` (`-c`), `env` (runs a command). Pure readers and filters (`stat`,
+`du`, `df`, `ps`, `rg`, `jq`, `cut`, `tr`, `diff`, checksums, ...) are safe
+in any case.
 
 In headless/RPC sessions an uncovered command is **blocked** (fail-closed,
 no interactive UI to ask); fully covered commands still run.
