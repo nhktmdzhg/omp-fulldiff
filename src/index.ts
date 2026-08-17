@@ -89,24 +89,29 @@ async function gateBashCommand(
   ui: BashCallContext,
 ): Promise<{ block: true; reason: string } | undefined> {
   const rules = parseBashPatternRules(settings.get('bash.patterns'));
-  if (hasRedirectOperator(command)) {
-    // `<`/`>` redirects are shell control the flat tokenizer does not split
-    // on — `cat > out` would match `cat *` and auto-run a file-writing
-    // command. Delegate to the native gate (hasBashApprovalShellControl
-    // rejects these with its own prompt), so deny/prompt/critical handling
-    // and the native UI stay in charge.
-    return undefined;
-  }
   const segments = extractFlatShellCommandSegments(command).map((s) => s.text);
   const tokenizedSegments = tokenizeShellSegments(command).map((s) =>
     s.join(' '),
   );
-  const classification = classifyBashApproval(
+  let classification = classifyBashApproval(
     command,
     rules,
     segments,
     tokenizedSegments,
   );
+
+  if (
+    hasRedirectOperator(command) &&
+    classification.kind !== 'deny' &&
+    classification.kind !== 'prompt'
+  ) {
+    // `<`/`>` redirects can't be auto-allowed. The native gate under
+    // `bash: allow` auto-runs any command an allow rule can't vouch for (an
+    // allow rule never vouches for shell control), so delegating would let
+    // `cat > out` write files. Downgrade to ask so the extension prompts.
+    // deny/prompt rules are still delegated to the native gate below.
+    classification = { kind: 'ask', denyRules: [], promptRules: [] };
+  }
 
   if (classification.kind === 'deny' || classification.kind === 'prompt') {
     // Native gate handles these with its own message/UI.
