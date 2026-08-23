@@ -17,7 +17,11 @@
  * approval uses). `deny`/`prompt` rules and omp's critical patterns are left
  * to the native gate so they keep their original behavior and UI.
  */
-import { generateDiffString } from '@oh-my-pi/pi-coding-agent/edit';
+import {
+	computeSloppySectionDiff,
+	generateDiffString,
+	splitSloppySections,
+} from '@oh-my-pi/pi-coding-agent/edit';
 import {
   CRITICAL_BASH_PATTERNS,
   renderDiff,
@@ -161,6 +165,38 @@ async function buildReviewPayload(
   const title = `${toolName} ${path || '(no path)'}`;
 
   if (!path) {
+    // EditMode "sloppy": payload is `{ input: "§path\n…ops…" }` with no
+    // `path` field. Diff via omp's own parser + in-memory apply (never
+    // writes); any other shape falls back to raw arguments.
+    const rawInput = typeof input.input === 'string' ? input.input : undefined;
+    if (rawInput && rawInput.trimStart().startsWith('§')) {
+      const sections = splitSloppySections(rawInput);
+      if (sections.length > 0) {
+        const results = await Promise.all(
+          sections.map(async (section) => ({
+            section,
+            diff: await computeSloppySectionDiff(section, cwd),
+          })),
+        );
+        const failed = results.find((r) => 'error' in r.diff);
+        if (!failed) {
+          return {
+            title: `${toolName} ${sections.map((s) => s.path).join(', ')}`,
+            diff: results
+              .map((r) => ('error' in r.diff ? '' : r.diff.diff))
+              .join('\n'),
+            filePath: sections.length === 1 ? sections[0].path : undefined,
+          };
+        }
+        return {
+          title,
+          diff: buildRawArgsView(
+            `⚠ sloppy diff failed: ${'error' in failed.diff ? failed.diff.error : 'unknown error'}`,
+            input,
+          ),
+        };
+      }
+    }
     const diff = buildRawArgsView('⚠ missing path — raw arguments', input);
     return { title, diff };
   }
