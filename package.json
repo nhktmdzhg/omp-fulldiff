@@ -1,6 +1,6 @@
 {
   "name": "omp-fulldiff",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "oh-my-pi extension: full-diff approval screen for edit/write tool calls",
   "type": "module",
   "license": "MIT",

@@ -18,9 +18,11 @@
  * to the native gate so they keep their original behavior and UI.
  */
 import {
-	computeSloppySectionDiff,
-	generateDiffString,
-	splitSloppySections,
+  computeHashlineDiff,
+  computeSloppySectionDiff,
+  generateDiffString,
+  InMemorySnapshotStore,
+  splitSloppySections,
 } from '@oh-my-pi/pi-coding-agent/edit';
 import {
   CRITICAL_BASH_PATTERNS,
@@ -169,33 +171,32 @@ async function buildReviewPayload(
     // `path` field. Diff via omp's own parser + in-memory apply (never
     // writes); any other shape falls back to raw arguments.
     const rawInput = typeof input.input === 'string' ? input.input : undefined;
-    if (rawInput && rawInput.trimStart().startsWith('§')) {
-      const sections = splitSloppySections(rawInput);
-      if (sections.length > 0) {
-        const results = await Promise.all(
-          sections.map(async (section) => ({
-            section,
-            diff: await computeSloppySectionDiff(section, cwd),
-          })),
+    if (rawInput && /^\[[^\]\r\n]+\]/.test(rawInput.trimStart())) {
+      // EditMode "hashline": `[path#tag]` header + PUT/... ops. omp's own
+      // parser + in-memory apply produce the diff (no FS write).
+      const hashlineDiff = await computeHashlineDiff(
+        { input: rawInput },
+        cwd,
+        new InMemorySnapshotStore(),
+      );
+      if (!('error' in hashlineDiff)) {
+        const match = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/.exec(
+          rawInput.trimStart(),
         );
-        const failed = results.find((r) => 'error' in r.diff);
-        if (!failed) {
-          return {
-            title: `${toolName} ${sections.map((s) => s.path).join(', ')}`,
-            diff: results
-              .map((r) => ('error' in r.diff ? '' : r.diff.diff))
-              .join('\n'),
-            filePath: sections.length === 1 ? sections[0].path : undefined,
-          };
-        }
+        const hashlinePath = match?.[1]?.trim() ?? '';
         return {
-          title,
-          diff: buildRawArgsView(
-            `⚠ sloppy diff failed: ${'error' in failed.diff ? failed.diff.error : 'unknown error'}`,
-            input,
-          ),
+          title: `${toolName} ${hashlinePath || '(unknown)'}`,
+          diff: hashlineDiff.diff,
+          filePath: hashlinePath || undefined,
         };
       }
+      return {
+        title,
+        diff: buildRawArgsView(
+          `⚠ hashline diff failed: ${hashlineDiff.error}`,
+          input,
+        ),
+      };
     }
     const diff = buildRawArgsView('⚠ missing path — raw arguments', input);
     return { title, diff };
