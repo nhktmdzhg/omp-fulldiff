@@ -168,9 +168,6 @@ async function buildReviewPayload(
   const title = `${toolName} ${path || '(no path)'}`;
 
   if (!path) {
-    // EditMode "sloppy": payload is `{ input: "§path\n…ops…" }` with no
-    // `path` field. Diff via omp's own parser + in-memory apply (never
-    // writes); any other shape falls back to raw arguments.
     const rawInput = typeof input.input === 'string' ? input.input : undefined;
     if (rawInput && rawInput.trimStart().startsWith('§')) {
       // EditMode "sloppy": `{ input: "§path\n…ops…" }`. omp's parser +
