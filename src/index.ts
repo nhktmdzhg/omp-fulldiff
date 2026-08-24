@@ -18,11 +18,12 @@
  * to the native gate so they keep their original behavior and UI.
  */
 import {
-  computeHashlineDiff,
-  computeSloppySectionDiff,
-  generateDiffString,
-  InMemorySnapshotStore,
-  splitSloppySections,
+	computeHashlineDiff,
+	computePatchDiff,
+	computeSloppySectionDiff,
+	generateDiffString,
+	InMemorySnapshotStore,
+	splitSloppySections,
 } from '@oh-my-pi/pi-coding-agent/edit';
 import {
   CRITICAL_BASH_PATTERNS,
@@ -171,6 +172,36 @@ async function buildReviewPayload(
     // `path` field. Diff via omp's own parser + in-memory apply (never
     // writes); any other shape falls back to raw arguments.
     const rawInput = typeof input.input === 'string' ? input.input : undefined;
+    if (rawInput && rawInput.trimStart().startsWith('§')) {
+      // EditMode "sloppy": `{ input: "§path\n…ops…" }`. omp's parser +
+      // in-memory apply produce the diff (no FS write).
+      const sections = splitSloppySections(rawInput);
+      if (sections.length > 0) {
+        const results = await Promise.all(
+          sections.map(async (section) => ({
+            section,
+            diff: await computeSloppySectionDiff(section, cwd),
+          })),
+        );
+        const failed = results.find((r) => 'error' in r.diff);
+        if (!failed) {
+          return {
+            title: `${toolName} ${sections.map((s) => s.path).join(', ')}`,
+            diff: results
+              .map((r) => ('error' in r.diff ? '' : r.diff.diff))
+              .join('\n'),
+            filePath: sections.length === 1 ? sections[0].path : undefined,
+          };
+        }
+        return {
+          title,
+          diff: buildRawArgsView(
+            `⚠ sloppy diff failed: ${'error' in failed.diff ? failed.diff.error : 'unknown error'}`,
+            input,
+          ),
+        };
+      }
+    }
     if (rawInput && /^\[[^\]\r\n]+\]/.test(rawInput.trimStart())) {
       // EditMode "hashline": `[path#tag]` header + PUT/... ops. omp's own
       // parser + in-memory apply produce the diff (no FS write).
@@ -180,9 +211,10 @@ async function buildReviewPayload(
         new InMemorySnapshotStore(),
       );
       if (!('error' in hashlineDiff)) {
-        const match = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/.exec(
-          rawInput.trimStart(),
-        );
+        const match =
+          /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/.exec(
+            rawInput.trimStart(),
+          );
         const hashlinePath = match?.[1]?.trim() ?? '';
         return {
           title: `${toolName} ${hashlinePath || '(unknown)'}`,
@@ -194,6 +226,23 @@ async function buildReviewPayload(
         title,
         diff: buildRawArgsView(
           `⚠ hashline diff failed: ${hashlineDiff.error}`,
+          input,
+        ),
+      };
+    }
+    const applyPatchMatch =
+      /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(
+        rawInput?.trimStart() ?? '',
+      );
+    if (applyPatchMatch) {
+      // EditMode "apply_patch": `*** Update File: <path>` + unified diff.
+      // omp has no standalone preview helper for this mode, so show the raw
+      // arguments with a correct title instead of "missing path".
+      const applyPath = applyPatchMatch[1].trim();
+      return {
+        title: `${toolName} ${applyPath}`,
+        diff: buildRawArgsView(
+          'apply_patch mode — no diff preview available (raw arguments)',
           input,
         ),
       };
@@ -238,13 +287,35 @@ async function buildReviewPayload(
     };
   }
 
-  const content = input.content;
-  if (typeof content === 'string') {
-    return {
-      title,
-      diff: generateDiffString(base, content, undefined, { path }).diff,
-      filePath: path,
-    };
+  const edits = input.edits;
+  if (Array.isArray(edits) && edits.length > 0) {
+    const first = edits[0];
+    if (first && typeof first === 'object' && ('diff' in first || 'op' in first)) {
+      // EditMode "patch": `{ path, edits: [{ op, diff }] }`. Diff each entry
+      // with omp's own in-memory preview (never writes).
+      const patchResults = await Promise.all(
+        edits.map(async (entry) =>
+          computePatchDiff({ path, ...(entry as object) }, cwd),
+        ),
+      );
+      const patchFailed = patchResults.find((r) => 'error' in r);
+      if (!patchFailed) {
+        return {
+          title,
+          diff: patchResults
+            .map((r) => ('error' in r ? '' : r.diff))
+            .join('\n'),
+          filePath: path,
+        };
+      }
+      return {
+        title,
+        diff: buildRawArgsView(
+          `⚠ patch diff failed: ${'error' in patchFailed ? patchFailed.error : 'unknown error'}`,
+          input,
+        ),
+      };
+    }
   }
 
   const diff = buildRawArgsView(
