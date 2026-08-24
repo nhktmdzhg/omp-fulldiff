@@ -285,6 +285,15 @@ async function buildReviewPayload(
   }
 
   const edits = input.edits;
+  const content = input.content;
+  if (typeof content === 'string') {
+    return {
+      title,
+      diff: generateDiffString(base, content, undefined, { path }).diff,
+      filePath: path,
+    };
+  }
+
   if (Array.isArray(edits) && edits.length > 0) {
     const first = edits[0];
     if (first && typeof first === 'object' && ('diff' in first || 'op' in first)) {
