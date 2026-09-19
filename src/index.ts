@@ -397,6 +397,13 @@ class FullDiffReview implements Component {
 }
 
 export default function extension(pi: ExtensionAPI): void {
+  // Always expand tool output (eval/bash full, full diffs) — same flag the
+  // ctrl+o toggle sets; new tool components inherit it via ui-helpers
+  // (`component.setExpanded(ctx.toolOutputExpanded)`).
+  pi.on('session_start', (_event, ctx) => {
+    ctx.ui.setToolsExpanded(true);
+  });
+
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName === 'bash') {
       const input = (event.input ?? {}) as Record<string, unknown>;
