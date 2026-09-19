@@ -49,20 +49,6 @@ import {
   parseBashPatternRules,
 } from './bash-approval';
 import { buildRawArgsView, isInternalUrl, resolveFilePath } from './diff-builder';
-import { toolRenderers } from '@oh-my-pi/pi-tui/tools';
-
-// During the eval prompt/call phase omp caps the code cell to a viewport-sized
-// tail window (`codeMaxLines: previewWindowRows()`; only ctrl+o uncaps). Wrap
-// the eval renderer's renderCall to force `expanded`, so long eval code is
-// shown in full (scrollable). `toolRenderers` is the live registry omp's
-// tool-execution reads per component; the eval tool definition and the result
-// rendering are untouched.
-const evalRenderer = toolRenderers.eval;
-toolRenderers.eval = {
-  ...evalRenderer,
-  renderCall: (args, options, theme) =>
-    evalRenderer.renderCall(args, { ...options, expanded: true }, theme),
-};
 
 /** Number of diff lines shown in the overlay window (terminal height is unknown at render). */
 const BODY_ROWS = 24;
@@ -410,7 +396,117 @@ class FullDiffReview implements Component {
   }
 }
 
+/** Full eval code shown during the call/prompt phase (transcript scrolls). */
+class EvalCodeCall implements Component {
+  constructor(
+    private readonly args: unknown,
+    private readonly theme: unknown,
+  ) {}
+
+  render(width: number): readonly string[] {
+    const a = (this.args ?? {}) as {
+      code?: unknown;
+      language?: unknown;
+      title?: unknown;
+    };
+    const code = typeof a.code === 'string' ? a.code : '';
+    const lang = a.language === 'js' ? 'javascript' : 'python';
+    const head =
+      typeof a.title === 'string' && a.title.length > 0
+        ? `>>> ${lang} · ${a.title}`
+        : `>>> ${lang}`;
+    const w = Math.max(1, width);
+    return [
+      fg(this.theme, 'accent', truncateToWidth(head, w), 'accent'),
+      ...code
+        .split('\n')
+        .map((line) => truncateToWidth(replaceTabs(line), w)),
+    ];
+  }
+
+  invalidate(): void {
+    // Stateless: render derives everything from args each call.
+  }
+}
+
+/** Eval output: native-style preview (10 lines; ctrl+o expands). */
+class EvalResultView implements Component {
+  constructor(
+    private readonly text: string,
+    private readonly expanded: boolean,
+    private readonly theme: unknown,
+  ) {}
+
+  render(width: number): readonly string[] {
+    const w = Math.max(1, width);
+    const all = this.text.length > 0 ? this.text.split('\n') : [];
+    const shown = this.expanded ? all : all.slice(-10);
+    const lines = shown.map((line) =>
+      fg(
+        this.theme,
+        'toolOutput',
+        truncateToWidth(replaceTabs(line), w),
+        'toolOutput',
+      ),
+    );
+    if (!this.expanded && all.length > shown.length) {
+      lines.push(
+        fg(
+          this.theme,
+          'dim',
+          truncateToWidth(
+            `… ${all.length - shown.length} more lines (ctrl+o to expand)`,
+            w,
+          ),
+          'dim',
+        ),
+      );
+    }
+    return lines;
+  }
+
+  invalidate(): void {
+    // Stateless: render derives everything from fields each call.
+  }
+}
+
 export default function extension(pi: ExtensionAPI): void {
+  // Shadow `eval` so its call/prompt phase shows the FULL code (omp caps the
+  // native renderer to a viewport-sized tail window; only ctrl+o uncaps).
+  // Execution delegates to the native tool; description/parameters are copied
+  // from the live registry so the model-facing prompt is unchanged.
+  pi.on('session_start', (_event, _ctx) => {
+    try {
+      const info = pi.getAllTools().find((t) => t.name === 'eval');
+      if (!info) return;
+      pi.registerTool({
+        name: 'eval',
+        label: 'Eval',
+        description: info.description,
+        parameters: info.parameters as never,
+        loadMode: 'essential',
+        approval: 'exec',
+        strict: true,
+        async execute(_id, params, signal, onUpdate, tctx) {
+          return tctx.invokeTool(params as Record<string, unknown>, {
+            signal,
+            onUpdate,
+          });
+        },
+        renderCall(args, _options, theme) {
+          return new EvalCodeCall(args, theme);
+        },
+        renderResult(result, options, theme) {
+          const text =
+            result.content?.find((c) => c.type === 'text')?.text ?? '';
+          return new EvalResultView(text.trimEnd(), options.expanded, theme);
+        },
+      });
+    } catch {
+      // Registry unavailable in this runtime — keep the native eval untouched.
+    }
+  });
+
   pi.on('tool_call', async (event, ctx) => {
     if (event.toolName === 'bash') {
       const input = (event.input ?? {}) as Record<string, unknown>;
