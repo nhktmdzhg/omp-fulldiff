@@ -50,18 +50,16 @@ import {
 } from './bash-approval';
 import { buildRawArgsView, isInternalUrl, resolveFilePath } from './diff-builder';
 import { evalToolRenderer } from '@oh-my-pi/pi-coding-agent/tools/eval';
-import { toolRenderers } from '@oh-my-pi/pi-coding-agent/tools/renderers';
 
 // During the eval prompt/call phase omp caps the code cell to a viewport-sized
 // tail window (`codeMaxLines: previewWindowRows()`; only ctrl+o uncaps). Wrap
 // renderCall to force `expanded`, so long eval code is shown in full
-// (scrollable). The eval tool definition (schema/description/execute) and the
-// result rendering are untouched.
-toolRenderers.eval = {
-  ...evalToolRenderer,
-  renderCall: (args, options, theme) =>
-    evalToolRenderer.renderCall(args, { ...options, expanded: true }, theme),
-};
+// (scrollable). `toolRenderers.eval` in omp is this same object, so mutating
+// its renderCall is enough. The tool definition (schema/description/execute)
+// and the result rendering are untouched.
+const baseEvalRenderCall = evalToolRenderer.renderCall;
+evalToolRenderer.renderCall = (args, options, theme) =>
+  baseEvalRenderCall(args, { ...options, expanded: true }, theme);
 
 /** Number of diff lines shown in the overlay window (terminal height is unknown at render). */
 const BODY_ROWS = 24;
