@@ -396,118 +396,37 @@ class FullDiffReview implements Component {
   }
 }
 
-/** Full eval code shown during the call/prompt phase (transcript scrolls). */
-class EvalCodeCall implements Component {
-  constructor(
-    private readonly args: unknown,
-    private readonly theme: unknown,
-  ) {}
-
-  render(width: number): readonly string[] {
-    const a = (this.args ?? {}) as {
-      code?: unknown;
-      language?: unknown;
-      title?: unknown;
-    };
-    const code = typeof a.code === 'string' ? a.code : '';
-    const lang = a.language === 'js' ? 'javascript' : 'python';
-    const head =
-      typeof a.title === 'string' && a.title.length > 0
-        ? `>>> ${lang} · ${a.title}`
-        : `>>> ${lang}`;
-    const w = Math.max(1, width);
-    return [
-      fg(this.theme, 'accent', truncateToWidth(head, w), 'accent'),
-      ...code
-        .split('\n')
-        .map((line) => truncateToWidth(replaceTabs(line), w)),
-    ];
-  }
-
-  invalidate(): void {
-    // Stateless: render derives everything from args each call.
-  }
-}
-
-/** Eval output: native-style preview (10 lines; ctrl+o expands). */
-class EvalResultView implements Component {
-  constructor(
-    private readonly text: string,
-    private readonly expanded: boolean,
-    private readonly theme: unknown,
-  ) {}
-
-  render(width: number): readonly string[] {
-    const w = Math.max(1, width);
-    const all = this.text.length > 0 ? this.text.split('\n') : [];
-    const shown = this.expanded ? all : all.slice(-10);
-    const lines = shown.map((line) =>
-      fg(
-        this.theme,
-        'toolOutput',
-        truncateToWidth(replaceTabs(line), w),
-        'toolOutput',
-      ),
-    );
-    if (!this.expanded && all.length > shown.length) {
-      lines.push(
-        fg(
-          this.theme,
-          'dim',
-          truncateToWidth(
-            `… ${all.length - shown.length} more lines (ctrl+o to expand)`,
-            w,
-          ),
-          'dim',
-        ),
-      );
-    }
-    return lines;
-  }
-
-  invalidate(): void {
-    // Stateless: render derives everything from fields each call.
-  }
-}
-
 export default function extension(pi: ExtensionAPI): void {
-  // Shadow `eval` so its call/prompt phase shows the FULL code (omp caps the
-  // native renderer to a viewport-sized tail window; only ctrl+o uncaps).
-  // Execution delegates to the native tool; description/parameters are copied
-  // from the live registry so the model-facing prompt is unchanged.
-  pi.on('session_start', (_event, _ctx) => {
-    try {
-      const info = pi.getAllTools().find((t) => t.name === 'eval');
-      if (!info) return;
-      pi.registerTool({
-        name: 'eval',
-        label: 'Eval',
-        description: info.description,
-        parameters: info.parameters as never,
-        loadMode: 'essential',
-        approval: 'exec',
-        strict: true,
-        async execute(_id, params, signal, onUpdate, tctx) {
-          return tctx.invokeTool(params as Record<string, unknown>, {
-            signal,
-            onUpdate,
-          });
-        },
-        renderCall(args, _options, theme) {
-          return new EvalCodeCall(args, theme);
-        },
-        renderResult(result, options, theme) {
-          const text =
-            result.content?.find((c) => c.type === 'text')?.text ?? '';
-          return new EvalResultView(text.trimEnd(), options.expanded, theme);
-        },
-      });
-    } catch {
-      // Registry unavailable in this runtime — keep the native eval untouched.
-    }
-  });
-
   pi.on('tool_call', async (event, ctx) => {
+    if (event.toolName === 'eval') {
+      if (!ctx.hasUI) return; // headless: let the native gate handle it
+      const input = (event.input ?? {}) as Record<string, unknown>;
+      const code = typeof input.code === 'string' ? input.code : '';
+      const language = input.language === 'js' ? 'javascript' : 'python';
+      const title =
+        typeof input.title === 'string' && input.title.length > 0
+          ? ` · ${input.title}`
+          : '';
+      const ok = await enqueue(
+        () =>
+          ctx.ui.custom<boolean>(
+            (_tui, theme, keybindings, done) =>
+              new FullDiffReview(
+                `eval · ${language}${title}`,
+                code.length > 0 ? code.split('\n') : ['(empty cell)'],
+                keybindings,
+                done,
+                theme,
+              ),
+            { overlay: true },
+          ),
+      );
+      if (ok === false) {
+        return { block: true, reason: 'Denied by user (eval review)' };
+      }
+      return;
+    }
+
     if (event.toolName === 'bash') {
       const input = (event.input ?? {}) as Record<string, unknown>;
       const command = typeof input.command === 'string' ? input.command : '';
