@@ -24,6 +24,7 @@ import {
   renderDiff,
   type ExtensionAPI,
 } from '@oh-my-pi/pi-coding-agent';
+import { lookup } from '@oh-my-pi/pi-coding-agent/config/registry';
 import {
   EditSession,
   EditStore,
@@ -453,15 +454,19 @@ export default function extension(pi: ExtensionAPI): void {
       const input = (event.input ?? {}) as Record<string, unknown>;
       const command = typeof input.command === 'string' ? input.command : '';
       if (command.length === 0) return; // let the native tool report the error
-      // Live Settings instance for this session (omp 18.6+ exposes it on ctx).
-      const sessionSettings = (ctx as { settings?: { get?: (id: string) => unknown } }).settings;
+      // omp 18.3+ replaced `settings.get(id)` with typed registry handles:
+      // resolve by id, then read through the host-provided settings scope.
+      const bashPatterns = lookup('bash.patterns');
       return gateBashCommand(command, {
         hasUI: ctx.hasUI,
         select: (title, options) => ctx.ui.select(title, options),
-        getPatterns: () =>
-          typeof sessionSettings?.get === 'function'
-            ? sessionSettings.get('bash.patterns')
-            : undefined,
+        getPatterns: () => {
+          try {
+            return bashPatterns ? bashPatterns.get(pi.pi.settings) : undefined;
+          } catch {
+            return undefined;
+          }
+        },
       });
     }
 
