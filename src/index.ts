@@ -21,9 +21,9 @@
 import * as os from 'node:os';
 import {
   CRITICAL_BASH_PATTERNS,
-  renderDiff,
   type ExtensionAPI,
 } from '@oh-my-pi/pi-coding-agent';
+import { renderDiff } from '@oh-my-pi/pi-tui/text/diff';
 import { lookup } from '@oh-my-pi/pi-coding-agent/config/registry';
 import {
   EditSession,
@@ -541,11 +541,12 @@ export default function extension(pi: ExtensionAPI): void {
             try {
               // omp's native diff renderer: colors, gutter, intra-line highlight.
               const colored = renderDiff(payload.diff, {
-                filePath: payload.filePath,
+                theme,
+                path: payload.filePath,
               });
               return new FullDiffReview(
                 payload.title,
-                colored.split('\n'),
+                colored,
                 keybindings,
                 done,
                 theme,
