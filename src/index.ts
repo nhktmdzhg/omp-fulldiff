@@ -143,7 +143,7 @@ async function gateBashCommand(
     return choice === 'Approve';
   });
   if (!approved) {
-    return { block: true, reason: 'Denied by user (bash approval)' };
+    return { block: true, reason: 'Denied by user' };
   }
   return undefined;
 }
@@ -474,7 +474,7 @@ export default function extension(pi: ExtensionAPI): void {
           ),
       );
       if (ok === false) {
-        return { block: true, reason: 'Denied by user (eval review)' };
+        return { block: true, reason: 'Denied by user' };
       }
       return;
     }
@@ -535,7 +535,7 @@ export default function extension(pi: ExtensionAPI): void {
       }
     });
     if (ok === false) {
-      return { block: true, reason: 'Denied by user (full diff review)' };
+      return { block: true, reason: 'Denied by user' };
     }
     // approve: return nothing → tool runs with the original input
   });
