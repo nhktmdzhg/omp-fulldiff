@@ -29,6 +29,7 @@ import {
   EditSession,
   EditStore,
   editDiffString,
+  truncateToWidth,
   type EditFilePreview,
   type EditPolicy,
 } from '@oh-my-pi/pi-natives';
@@ -36,13 +37,8 @@ import {
   extractFlatShellCommandSegments,
   tokenizeShellSegments,
 } from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
-import type { Component } from '@oh-my-pi/pi-tui';
-import {
-  extractPrintableText,
-  matchesKey,
-  replaceTabs,
-  truncateToWidth,
-} from '@oh-my-pi/pi-tui';
+import { UiNode } from '@oh-my-pi/pi-tui';
+import { replaceTabs } from '@oh-my-pi/pi-tui/text/width';
 import {
   classifyBashApproval,
   hasRedirectOperator,
@@ -362,81 +358,25 @@ function fg(
 }
 
 /** Full-diff review overlay: scrollable diff body + approve/deny keybindings. */
-class FullDiffReview implements Component {
-  private scroll = 0;
+function createDiffReview(
+  ui: { requestRender: () => void },
+  header: string,
+  body: string[],
+  theme: unknown,
+  done: (ok: boolean) => void,
+): UiNode {
+  let scroll = 0;
+  const maxScroll = (): number => Math.max(0, body.length - BODY_ROWS);
 
-  constructor(
-    private header: string,
-    private body: string[],
-    private keybindings: { matches: (data: string, action: string) => boolean },
-    private done: (ok: boolean) => void,
-    private theme: unknown,
-  ) {}
-
-  handleInput(data: string): void {
-    if (this.keybindings.matches(data, 'app.interrupt')) {
-      this.done(false);
-      return;
-    }
-    if (matchesKey(data, 'escape')) {
-      this.done(false);
-      return;
-    }
-    const printable = extractPrintableText(data);
-    if (printable === 'n') {
-      this.done(false);
-      return;
-    }
-    if (
-      printable === 'y' ||
-      matchesKey(data, 'enter') ||
-      matchesKey(data, 'return') ||
-      data === '\n'
-    ) {
-      this.done(true);
-      return;
-    }
-    const maxScroll = Math.max(0, this.body.length - BODY_ROWS);
-    if (matchesKey(data, 'j') || matchesKey(data, 'down')) {
-      if (this.scroll < maxScroll) this.scroll++;
-      return;
-    }
-    if (matchesKey(data, 'k') || matchesKey(data, 'up')) {
-      if (this.scroll > 0) this.scroll--;
-      return;
-    }
-    if (matchesKey(data, 'pagedown')) {
-      this.scroll = Math.min(this.scroll + BODY_ROWS, maxScroll);
-      return;
-    }
-    if (matchesKey(data, 'pageup')) {
-      this.scroll = Math.max(0, this.scroll - BODY_ROWS);
-      return;
-    }
-    if (matchesKey(data, 'home') || printable === 'g') {
-      this.scroll = 0;
-      return;
-    }
-    if (matchesKey(data, 'end') || printable === 'G') {
-      this.scroll = maxScroll;
-    }
-  }
-
-  render(width: number): readonly string[] {
+  const paint = (width: number): readonly string[] => {
     const w = Math.max(1, width);
-    const maxScroll = Math.max(0, this.body.length - BODY_ROWS);
-    if (this.scroll > maxScroll) this.scroll = maxScroll;
-    const start = this.scroll;
-    const end = Math.min(this.body.length, start + BODY_ROWS);
+    if (scroll > maxScroll()) scroll = maxScroll();
+    const start = scroll;
+    const end = Math.min(body.length, start + BODY_ROWS);
     const lines: string[] = [
+      fg(theme, 'accent', truncateToWidth(replaceTabs(header), w), 'accent'),
       fg(
-        this.theme,
-        'accent',
-        truncateToWidth(replaceTabs(this.header), w),
-        'accent',
-      ),
-      fg(
-        this.theme,
+        theme,
         'dim',
         truncateToWidth(
           replaceTabs(
@@ -448,15 +388,15 @@ class FullDiffReview implements Component {
       ),
     ];
     for (let i = start; i < end; i++) {
-      lines.push(truncateToWidth(replaceTabs(this.body[i]), w));
+      lines.push(truncateToWidth(replaceTabs(body[i]), w));
     }
-    if (end < this.body.length) {
+    if (end < body.length) {
       lines.push(
         fg(
-          this.theme,
+          theme,
           'dim',
           truncateToWidth(
-            replaceTabs(`… ${this.body.length - end} more lines (j to scroll)`),
+            replaceTabs(`… ${body.length - end} more lines (j to scroll)`),
             w,
           ),
           'dim',
@@ -464,11 +404,49 @@ class FullDiffReview implements Component {
       );
     }
     return lines;
-  }
+  };
 
-  invalidate(): void {
-    // Nothing to do: render returns a fresh array whenever scroll changes.
-  }
+  const onKey = (key: { id: string }): boolean => {
+    switch (key.id) {
+      case 'escape':
+      case 'n':
+        done(false);
+        return true;
+      case 'y':
+      case 'enter':
+      case 'return':
+        done(true);
+        return true;
+      case 'j':
+      case 'down':
+        scroll = Math.min(scroll + 1, maxScroll());
+        break;
+      case 'k':
+      case 'up':
+        scroll = Math.max(0, scroll - 1);
+        break;
+      case 'pagedown':
+        scroll = Math.min(scroll + BODY_ROWS, maxScroll());
+        break;
+      case 'pageup':
+        scroll = Math.max(0, scroll - BODY_ROWS);
+        break;
+      case 'home':
+      case 'g':
+        scroll = 0;
+        break;
+      case 'end':
+      case 'G':
+        scroll = maxScroll();
+        break;
+      default:
+        return false;
+    }
+    ui.requestRender();
+    return true;
+  };
+
+  return new UiNode('canvas', { paint, onKey });
 }
 
 export default function extension(pi: ExtensionAPI): void {
@@ -485,13 +463,13 @@ export default function extension(pi: ExtensionAPI): void {
       const ok = await enqueue(
         () =>
           ctx.ui.custom<boolean>(
-            (_tui, theme, keybindings, done) =>
-              new FullDiffReview(
+            (ui, theme, _keybindings, done) =>
+              createDiffReview(
+                ui,
                 `eval · ${language}${title}`,
                 code.length > 0 ? code.split('\n') : ['(empty cell)'],
-                keybindings,
-                done,
                 theme,
+                done,
               ),
             { overlay: true },
           ),
@@ -537,23 +515,17 @@ export default function extension(pi: ExtensionAPI): void {
           : await writePreview(input, cwd);
       try {
         return await ctx.ui.custom<boolean>(
-          (tui, theme, keybindings, done) => {
+          (ui, theme, _keybindings, done) => {
             try {
               // omp's native diff renderer: colors, gutter, intra-line highlight.
               const colored = renderDiff(payload.diff, {
                 theme,
                 path: payload.filePath,
               });
-              return new FullDiffReview(
-                payload.title,
-                colored,
-                keybindings,
-                done,
-                theme,
-              );
+              return createDiffReview(ui, payload.title, colored, theme, done);
             } catch {
               done(false);
-              return { render: () => [], invalidate: () => {} };
+              return undefined;
             }
           },
           { overlay: true },
