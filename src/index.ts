@@ -23,7 +23,7 @@ import {
   CRITICAL_BASH_PATTERNS,
   type ExtensionAPI,
 } from '@oh-my-pi/pi-coding-agent';
-import { renderDiff } from '@oh-my-pi/pi-tui/text/diff';
+import { renderDiff, wrapDiffRow } from '@oh-my-pi/pi-tui/text/diff';
 import { lookup } from '@oh-my-pi/pi-coding-agent/config/registry';
 import {
   EditSession,
@@ -37,7 +37,7 @@ import {
   tokenizeShellSegments,
 } from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
 import { UiNode } from '@oh-my-pi/pi-tui';
-import { replaceTabs, truncate, wrap } from '@oh-my-pi/pi-tui/text/width';
+import { replaceTabs, truncate } from '@oh-my-pi/pi-tui/text/width';
 import {
   classifyBashApproval,
   hasRedirectOperator,
@@ -374,12 +374,10 @@ function createDiffReview(
     const w = Math.max(1, width);
     const wrapped: string[] = [];
     for (const line of body) {
-      const parts = wrap(replaceTabs(line), w);
-      if (parts.length === 0) {
-        wrapped.push('');
-      } else {
-        wrapped.push(...parts);
-      }
+      // Purpose-built diff wrapper: keeps the gutter, re-opens the row color on
+      // continuation rows and closes inverse/color per row (intra-line changed
+      // words stay visible). Non-diff rows fall back to a plain wrap.
+      wrapped.push(...wrapDiffRow(line, w));
     }
     rows = wrapped;
     if (scroll > maxScroll()) scroll = maxScroll();
