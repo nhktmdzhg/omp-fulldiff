@@ -37,7 +37,7 @@ import {
   tokenizeShellSegments,
 } from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
 import { UiNode } from '@oh-my-pi/pi-tui';
-import { replaceTabs, truncate } from '@oh-my-pi/pi-tui/text/width';
+import { replaceTabs, truncate, wrap } from '@oh-my-pi/pi-tui/text/width';
 import {
   classifyBashApproval,
   hasRedirectOperator,
@@ -365,13 +365,26 @@ function createDiffReview(
   done: (ok: boolean) => void,
 ): UiNode {
   let scroll = 0;
-  const maxScroll = (): number => Math.max(0, body.length - BODY_ROWS);
+  // Rebuilt each paint: long diff/code lines WRAP (keeping ANSI colors) so no
+  // content is cut off horizontally; scrolling counts the wrapped rows.
+  let rows: string[] = body;
+  const maxScroll = (): number => Math.max(0, rows.length - BODY_ROWS);
 
   const paint = (width: number): readonly string[] => {
     const w = Math.max(1, width);
+    const wrapped: string[] = [];
+    for (const line of body) {
+      const parts = wrap(replaceTabs(line), w);
+      if (parts.length === 0) {
+        wrapped.push('');
+      } else {
+        wrapped.push(...parts);
+      }
+    }
+    rows = wrapped;
     if (scroll > maxScroll()) scroll = maxScroll();
     const start = scroll;
-    const end = Math.min(body.length, start + BODY_ROWS);
+    const end = Math.min(rows.length, start + BODY_ROWS);
     const lines: string[] = [
       fg(theme, 'accent', truncate(replaceTabs(header), w), 'accent'),
       fg(
@@ -387,15 +400,15 @@ function createDiffReview(
       ),
     ];
     for (let i = start; i < end; i++) {
-      lines.push(truncate(replaceTabs(body[i]), w));
+      lines.push(rows[i]);
     }
-    if (end < body.length) {
+    if (end < rows.length) {
       lines.push(
         fg(
           theme,
           'dim',
           truncate(
-            replaceTabs(`… ${body.length - end} more lines (j to scroll)`),
+            replaceTabs(`… ${rows.length - end} more lines (j to scroll)`),
             w,
           ),
           'dim',
