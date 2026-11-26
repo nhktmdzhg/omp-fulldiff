@@ -23,11 +23,12 @@ import {
   CRITICAL_BASH_PATTERNS,
   type ExtensionAPI,
 } from '@oh-my-pi/pi-coding-agent';
-import { renderDiff, wrapDiffRow } from '@oh-my-pi/pi-tui/text/diff';
+import { wrapDiffRow } from '@oh-my-pi/pi-tui/text/diff';
 import { lookup } from '@oh-my-pi/pi-coding-agent/config/registry';
 import {
   EditSession,
   EditStore,
+  diffWords,
   editDiffString,
   type EditFilePreview,
   type EditPolicy,
@@ -356,6 +357,84 @@ function fg(
   }
 }
 
+/** `+12|text` / `-12|text` / ` 12|text` rows of omp's compact diff. */
+const REVIEW_DIFF_ROW = /^([+\- ])(\s*\d*)\|(.*)$/s;
+
+/**
+ * Draw omp's compact diff so that ONLY the changed words carry the red/green
+ * row color; unchanged text stays plain. omp's own renderer colors the whole
+ * line and marks changed words with inverse, which is hard to read when just a
+ * tail word changed.
+ */
+function renderReviewDiff(text: string, theme: unknown): string[] {
+  const t = theme as {
+    fg: (color: string, text: string) => string;
+    style: (tokens: string, text: string) => string;
+  };
+  type Row = { marker: '+' | '-' | ' ' | null; number: string; content: string };
+  const rows: Row[] = text.split('\n').map((line) => {
+    const match = REVIEW_DIFF_ROW.exec(line);
+    if (!match) return { marker: null, number: '', content: line };
+    return {
+      marker: match[1] as '+' | '-' | ' ',
+      number: (match[2] ?? '').trim(),
+      content: match[3] ?? '',
+    };
+  });
+  let numberWidth = 3;
+  for (const row of rows) {
+    if (row.marker !== null) numberWidth = Math.max(numberWidth, row.number.length);
+  }
+  const gutter = (marker: '+' | '-' | ' ', number: string, content: string): string => {
+    const label =
+      marker.trim() !== '' && number !== '' ? `${marker}${number}` : number || marker.trim();
+    return `${t.fg('dim', label.padStart(numberWidth + 1))}${t.fg('dim', '│')}${content}`;
+  };
+
+  const out: string[] = [];
+  for (let i = 0; i < rows.length; ) {
+    const row = rows[i]!;
+    if (row.marker === null) {
+      out.push(t.fg('toolDiffContext', row.content));
+      i++;
+      continue;
+    }
+    if (row.marker === ' ') {
+      out.push(t.fg('toolDiffContext', gutter(' ', row.number, row.content)));
+      i++;
+      continue;
+    }
+    const removed: Row[] = [];
+    while (i < rows.length && rows[i]!.marker === '-') removed.push(rows[i++]!);
+    const added: Row[] = [];
+    while (i < rows.length && rows[i]!.marker === '+') added.push(rows[i++]!);
+    if (removed.length === 1 && added.length === 1) {
+      const oldParts: string[] = [];
+      const newParts: string[] = [];
+      for (const part of diffWords(removed[0]!.content, added[0]!.content)) {
+        if (part.removed) {
+          oldParts.push(t.fg('toolDiffRemoved', part.value));
+        } else if (part.added) {
+          newParts.push(t.fg('toolDiffAdded', part.value));
+        } else {
+          oldParts.push(part.value);
+          newParts.push(part.value);
+        }
+      }
+      out.push(gutter('-', removed[0]!.number, oldParts.join('')));
+      out.push(gutter('+', added[0]!.number, newParts.join('')));
+      continue;
+    }
+    for (const line of removed) {
+      out.push(t.fg('toolDiffRemoved', gutter('-', line.number, line.content)));
+    }
+    for (const line of added) {
+      out.push(t.fg('toolDiffAdded', gutter('+', line.number, line.content)));
+    }
+  }
+  return out;
+}
+
 /** Full-diff review overlay: scrollable diff body + approve/deny keybindings. */
 function createDiffReview(
   ui: { requestRender: () => void },
@@ -527,11 +606,8 @@ export default function extension(pi: ExtensionAPI): void {
         return await ctx.ui.custom<boolean>(
           (ui, theme, _keybindings, done) => {
             try {
-              // omp's native diff renderer: colors, gutter, intra-line highlight.
-              const colored = renderDiff(payload.diff, {
-                theme,
-                path: payload.filePath,
-              });
+              // Changed words only: red for removed, green for added.
+              const colored = renderReviewDiff(payload.diff, theme);
               return createDiffReview(ui, payload.title, colored, theme, done);
             } catch {
               done(false);
