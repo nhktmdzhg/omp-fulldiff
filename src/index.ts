@@ -29,7 +29,6 @@ import {
   EditSession,
   EditStore,
   editDiffString,
-  truncateToWidth,
   type EditFilePreview,
   type EditPolicy,
 } from '@oh-my-pi/pi-natives';
@@ -38,7 +37,7 @@ import {
   tokenizeShellSegments,
 } from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
 import { UiNode } from '@oh-my-pi/pi-tui';
-import { replaceTabs } from '@oh-my-pi/pi-tui/text/width';
+import { replaceTabs, truncate } from '@oh-my-pi/pi-tui/text/width';
 import {
   classifyBashApproval,
   hasRedirectOperator,
@@ -374,11 +373,11 @@ function createDiffReview(
     const start = scroll;
     const end = Math.min(body.length, start + BODY_ROWS);
     const lines: string[] = [
-      fg(theme, 'accent', truncateToWidth(replaceTabs(header), w), 'accent'),
+      fg(theme, 'accent', truncate(replaceTabs(header), w), 'accent'),
       fg(
         theme,
         'dim',
-        truncateToWidth(
+        truncate(
           replaceTabs(
             'j/k ↑↓ scroll · pgup/pgdn · g/G top/bottom · y/Enter approve · n/Esc deny',
           ),
@@ -388,14 +387,14 @@ function createDiffReview(
       ),
     ];
     for (let i = start; i < end; i++) {
-      lines.push(truncateToWidth(replaceTabs(body[i]), w));
+      lines.push(truncate(replaceTabs(body[i]), w));
     }
     if (end < body.length) {
       lines.push(
         fg(
           theme,
           'dim',
-          truncateToWidth(
+          truncate(
             replaceTabs(`… ${body.length - end} more lines (j to scroll)`),
             w,
           ),
