@@ -520,10 +520,10 @@ function createDiffReview(
       case 'up':
         scroll = Math.max(0, scroll - 1);
         return;
-      case 'pagedown':
+      case 'pageDown':
         scroll = Math.min(scroll + BODY_ROWS, maxScroll());
         return;
-      case 'pageup':
+      case 'pageUp':
         scroll = Math.max(0, scroll - BODY_ROWS);
         return;
       case 'home':
@@ -531,7 +531,7 @@ function createDiffReview(
         scroll = 0;
         return;
       case 'end':
-      case 'G':
+      case 'shift+g':
         scroll = maxScroll();
         return;
       default:
