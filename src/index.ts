@@ -37,7 +37,7 @@ import {
   extractFlatShellCommandSegments,
   tokenizeShellSegments,
 } from '@oh-my-pi/pi-coding-agent/tools/shell-tokenize';
-import { UiNode } from '@oh-my-pi/pi-tui';
+import { decodeInput } from '@oh-my-pi/pi-tui/driver/input/decoder';
 import { replaceTabs, truncate } from '@oh-my-pi/pi-tui/text/width';
 import {
   classifyBashApproval,
@@ -435,29 +435,34 @@ function renderReviewDiff(text: string, theme: unknown): string[] {
   return out;
 }
 
-/** Full-diff review overlay: scrollable diff body + approve/deny keybindings. */
+/** First key event of a raw input chunk (kitty protocol first, then legacy). */
+function decodeFirstKey(data: string): { id: string } | undefined {
+  for (const kitty of [true, false]) {
+    const hit = decodeInput(data, { kitty }).find(
+      (event) => event.type === 'key' && event.key.kind !== 'release',
+    );
+    if (hit !== undefined && hit.type === 'key') return hit.key;
+  }
+  return undefined;
+}
+
+/** Full-diff review overlay rows: scrollable diff body + approve/deny keys. */
 function createDiffReview(
-  ui: { requestRender: () => void },
   header: string,
   body: string[],
   theme: unknown,
   done: (ok: boolean) => void,
-): UiNode {
+): { render(width: number): string[]; handleInput(data: string): void } {
   let scroll = 0;
-  // Rebuilt each paint: long diff/code lines WRAP (keeping ANSI colors) so no
+  // Rebuilt each render: long lines WRAP (diff rows keep their gutter) so no
   // content is cut off horizontally; scrolling counts the wrapped rows.
   let rows: string[] = body;
   const maxScroll = (): number => Math.max(0, rows.length - BODY_ROWS);
 
-  const paint = (width: number): readonly string[] => {
+  const render = (width: number): string[] => {
     const w = Math.max(1, width);
     const wrapped: string[] = [];
-    for (const line of body) {
-      // Purpose-built diff wrapper: keeps the gutter, re-opens the row color on
-      // continuation rows and closes inverse/color per row (intra-line changed
-      // words stay visible). Non-diff rows fall back to a plain wrap.
-      wrapped.push(...wrapDiffRow(line, w));
-    }
+    for (const line of body) wrapped.push(...wrapDiffRow(line, w));
     rows = wrapped;
     if (scroll > maxScroll()) scroll = maxScroll();
     const start = scroll;
@@ -476,9 +481,7 @@ function createDiffReview(
         'dim',
       ),
     ];
-    for (let i = start; i < end; i++) {
-      lines.push(rows[i]);
-    }
+    for (let i = start; i < end; i++) lines.push(rows[i]);
     if (end < rows.length) {
       lines.push(
         fg(
@@ -495,50 +498,48 @@ function createDiffReview(
     return lines;
   };
 
-  const onKey = (key: { id: string }): boolean => {
+  // Draws are driven by the host: it re-renders after every handleInput.
+  const handleInput = (data: string): void => {
+    const key = decodeFirstKey(data);
+    if (key === undefined) return;
     switch (key.id) {
       case 'escape':
       case 'n':
         done(false);
-        return true;
+        return;
       case 'y':
       case 'enter':
       case 'return':
         done(true);
-        return true;
+        return;
       case 'j':
       case 'down':
         scroll = Math.min(scroll + 1, maxScroll());
-        break;
+        return;
       case 'k':
       case 'up':
         scroll = Math.max(0, scroll - 1);
-        break;
+        return;
       case 'pagedown':
         scroll = Math.min(scroll + BODY_ROWS, maxScroll());
-        break;
+        return;
       case 'pageup':
         scroll = Math.max(0, scroll - BODY_ROWS);
-        break;
+        return;
       case 'home':
       case 'g':
         scroll = 0;
-        break;
+        return;
       case 'end':
       case 'G':
         scroll = maxScroll();
-        break;
+        return;
       default:
-        return false;
+        return;
     }
-    ui.requestRender();
-    return true;
   };
 
-  // Focus lives on the root node: a bare `canvas` does not take keyboard focus,
-  // so wrap it in a `col` that owns `onKey` (keys bubble to it).
-  const canvas = new UiNode('canvas', { paint });
-  return new UiNode('col', { onKey, children: [canvas] });
+  return { render, handleInput };
 }
 
 export default function extension(pi: ExtensionAPI): void {
@@ -555,9 +556,8 @@ export default function extension(pi: ExtensionAPI): void {
       const ok = await enqueue(
         () =>
           ctx.ui.custom<boolean>(
-            (ui, theme, _keybindings, done) =>
+            (_ui, theme, _keybindings, done) =>
               createDiffReview(
-                ui,
                 `eval · ${language}${title}`,
                 code.length > 0 ? code.split('\n') : ['(empty cell)'],
                 theme,
@@ -611,7 +611,7 @@ export default function extension(pi: ExtensionAPI): void {
             try {
               // Changed words only: red for removed, green for added.
               const colored = renderReviewDiff(payload.diff, theme);
-              return createDiffReview(ui, payload.title, colored, theme, done);
+              return createDiffReview(payload.title, colored, theme, done);
             } catch {
               done(false);
               return undefined;
