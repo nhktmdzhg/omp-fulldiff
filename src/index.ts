@@ -535,7 +535,10 @@ function createDiffReview(
     return true;
   };
 
-  return new UiNode('canvas', { paint, onKey });
+  // Focus lives on the root node: a bare `canvas` does not take keyboard focus,
+  // so wrap it in a `col` that owns `onKey` (keys bubble to it).
+  const canvas = new UiNode('canvas', { paint });
+  return new UiNode('col', { onKey, children: [canvas] });
 }
 
 export default function extension(pi: ExtensionAPI): void {
